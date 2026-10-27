@@ -80,6 +80,52 @@ jobs:
               f.write(text)
           print("config.rs patched: server and key applied")
 
+
+      # Hide the network/server settings from end users and pin the server + key so
+      # they cannot be redirected through the UI or a hand-edited user config file.
+      # The values come from the constants patched in the previous step.
+      - name: Apply Digident client settings
+        shell: python
+        run: |
+          import sys
+          path = "src/common.rs"
+          with open(path, encoding="utf-8", newline="") as f:
+              text = f.read()
+          marker = "pub fn load_custom_client() {"
+          if text.count(marker) != 1:
+              sys.exit("load_custom_client() not found exactly once in src/common.rs")
+          if "apply_digident_client_settings" in text:
+              sys.exit("src/common.rs already patched")
+          rust_fn = """
+          // ---- Digident: built-in client settings (added by CI patch) ----
+          fn apply_digident_client_settings() {
+              {
+                  let mut b = config::BUILTIN_SETTINGS.write().unwrap();
+                  for k in [
+                      "hide-network-settings",
+                      "hide-server-settings",
+                      "hide-proxy-settings",
+                      "hide-websocket-settings",
+                  ] {
+                      b.insert(k.to_owned(), "Y".to_owned());
+                  }
+              }
+              {
+                  let mut o = config::OVERWRITE_SETTINGS.write().unwrap();
+                  o.insert(
+                      "custom-rendezvous-server".to_owned(),
+                      config::RENDEZVOUS_SERVERS[0].to_owned(),
+                  );
+                  o.insert("key".to_owned(), config::RS_PUB_KEY.to_owned());
+              }
+          }
+          """
+          text = text.replace(marker, marker + "\n    apply_digident_client_settings();", 1)
+          text = text.rstrip("\r\n") + "\n" + rust_fn
+          with open(path, "w", encoding="utf-8", newline="") as f:
+              f.write(text)
+          print("src/common.rs patched")
+
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
