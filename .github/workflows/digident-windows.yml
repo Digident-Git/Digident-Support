@@ -126,6 +126,72 @@ jobs:
               f.write(text)
           print("src/common.rs patched")
 
+      # Branding, phase 1: icons from digident-branding/, version info, MSI contact links.
+      # The company line "Copyright ... Purslane Tech" is kept on purpose (AGPL notice).
+      - name: Apply Digident branding
+        shell: python
+        run: |
+          import os, shutil, sys
+
+          src = "digident-branding"
+          if not os.path.isdir(src):
+              sys.exit("Folder digident-branding/ was not found in the repo")
+
+          # (file in digident-branding, destination in the source tree, destination must already exist)
+          copies = [
+              ("icon.ico", "res/icon.ico", True),
+              ("icon.ico", "flutter/windows/runner/resources/app_icon.ico", True),
+              ("icon.ico", "flutter/assets/icon.ico", False),
+              ("icon.png", "res/icon.png", True),
+              ("icon.png", "flutter/assets/icon.png", False),
+              ("32x32.png", "res/32x32.png", True),
+              ("64x64.png", "res/64x64.png", True),
+              ("128x128.png", "res/128x128.png", True),
+              ("128x128_2x.png", "res/128x128@2x.png", True),
+              ("tray-icon.ico", "res/tray-icon.ico", True),
+          ]
+          for name, dest, required in copies:
+              s = os.path.join(src, name)
+              if not os.path.isfile(s):
+                  sys.exit("Missing branding file: " + s)
+              if os.path.exists(dest):
+                  shutil.copyfile(s, dest)
+                  print("replaced", dest)
+              elif required:
+                  sys.exit("Expected file not found in the repo: " + dest)
+              else:
+                  print("skipped (not present):", dest)
+
+          def patch(path, pairs, strict=True):
+              with open(path, encoding="utf-8", newline="") as f:
+                  t = f.read()
+              for old, new in pairs:
+                  n = t.count(old)
+                  if n < 1:
+                      msg = "pattern not found in " + path + ": " + old
+                      if strict:
+                          sys.exit(msg)
+                      print("WARNING:", msg)
+                      continue
+                  t = t.replace(old, new)
+              with open(path, "w", encoding="utf-8", newline="") as f:
+                  f.write(t)
+              print("patched", path)
+
+          # Version info shown in the exe properties (Details tab) and Task Manager.
+          patch("flutter/windows/runner/Runner.rc", [
+              ('VALUE "CompanyName", "Purslane Tech Pte. Ltd."', 'VALUE "CompanyName", "Digident"'),
+              ('VALUE "FileDescription", "RustDesk Remote Desktop"', 'VALUE "FileDescription", "Digident Support"'),
+              ('VALUE "ProductName", "RustDesk"', 'VALUE "ProductName", "Digident Support"'),
+              ('All rights reserved." "\\0"', 'All rights reserved. Modified by Digident." "\\0"'),
+          ])
+
+          # Support / contact links shown in Programs and Features.
+          patch("res/msi/preprocess.py", [
+              ('"https://github.com/rustdesk/rustdesk/issues/"', '"https://www.digident.gr/support"'),
+              ('"https://github.com/rustdesk/rustdesk"', '"https://www.digident.gr"'),
+          ], strict=False)
+
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -283,7 +349,7 @@ jobs:
       - name: Build msi
         run: |
           pushd ./res/msi
-          python preprocess.py --arp -d ../../rustdesk
+          python preprocess.py --arp -d ../../rustdesk -m Digident
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
           $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
