@@ -99,6 +99,7 @@ jobs:
           rust_fn = """
           // ---- Digident: built-in client settings (added by CI patch) ----
           fn apply_digident_client_settings() {
+              *config::APP_NAME.write().unwrap() = "Digident Support".to_owned();
               {
                   let mut b = config::BUILTIN_SETTINGS.write().unwrap();
                   for k in [
@@ -126,8 +127,9 @@ jobs:
               f.write(text)
           print("src/common.rs patched")
 
-      # Branding, phase 1: icons from digident-branding/, version info, MSI contact links.
-      # The company line "Copyright ... Purslane Tech" is kept on purpose (AGPL notice).
+      # Branding: icons + agreement + left-panel logo from digident-branding/, version info,
+      # MSI contact links, accent colour. The Purslane Tech copyright line is kept on purpose
+      # (AGPL notice).
       - name: Apply Digident branding
         shell: python
         run: |
@@ -137,28 +139,35 @@ jobs:
           if not os.path.isdir(src):
               sys.exit("Folder digident-branding/ was not found in the repo")
 
-          # (file in digident-branding, destination in the source tree, destination must already exist)
+          # mode: must = destination has to exist already, optional = replace only if present,
+          #       create = create or replace
           copies = [
-              ("icon.ico", "res/icon.ico", True),
-              ("icon.ico", "flutter/windows/runner/resources/app_icon.ico", True),
-              ("icon.ico", "flutter/assets/icon.ico", False),
-              ("icon.png", "res/icon.png", True),
-              ("icon.png", "flutter/assets/icon.png", False),
-              ("32x32.png", "res/32x32.png", True),
-              ("64x64.png", "res/64x64.png", True),
-              ("128x128.png", "res/128x128.png", True),
-              ("128x128_2x.png", "res/128x128@2x.png", True),
-              ("tray-icon.ico", "res/tray-icon.ico", True),
+              ("icon.ico", "res/icon.ico", "must"),
+              ("icon.ico", "flutter/windows/runner/resources/app_icon.ico", "must"),
+              ("icon.ico", "flutter/assets/icon.ico", "optional"),
+              ("icon.png", "res/icon.png", "must"),
+              ("icon.png", "flutter/assets/icon.png", "optional"),
+              ("32x32.png", "res/32x32.png", "must"),
+              ("64x64.png", "res/64x64.png", "must"),
+              ("128x128.png", "res/128x128.png", "must"),
+              ("128x128_2x.png", "res/128x128@2x.png", "must"),
+              ("tray-icon.ico", "res/tray-icon.ico", "must"),
+              ("License.rtf", "res/msi/Package/License.rtf", "must"),
+              ("left-panel.png", "flutter/assets/logo.png", "create"),
           ]
-          for name, dest, required in copies:
+          for name, dest, mode in copies:
               s = os.path.join(src, name)
               if not os.path.isfile(s):
                   sys.exit("Missing branding file: " + s)
               if os.path.exists(dest):
                   shutil.copyfile(s, dest)
                   print("replaced", dest)
-              elif required:
+              elif mode == "must":
                   sys.exit("Expected file not found in the repo: " + dest)
+              elif mode == "create":
+                  os.makedirs(os.path.dirname(dest), exist_ok=True)
+                  shutil.copyfile(s, dest)
+                  print("created", dest)
               else:
                   print("skipped (not present):", dest)
 
@@ -166,8 +175,7 @@ jobs:
               with open(path, encoding="utf-8", newline="") as f:
                   t = f.read()
               for old, new in pairs:
-                  n = t.count(old)
-                  if n < 1:
+                  if t.count(old) < 1:
                       msg = "pattern not found in " + path + ": " + old
                       if strict:
                           sys.exit(msg)
@@ -182,6 +190,8 @@ jobs:
           patch("flutter/windows/runner/Runner.rc", [
               ('VALUE "CompanyName", "Purslane Tech Pte. Ltd."', 'VALUE "CompanyName", "Digident"'),
               ('VALUE "FileDescription", "RustDesk Remote Desktop"', 'VALUE "FileDescription", "Digident Support"'),
+              ('VALUE "InternalName", "rustdesk"', 'VALUE "InternalName", "Digident Support"'),
+              ('VALUE "OriginalFilename", "rustdesk.exe"', 'VALUE "OriginalFilename", "Digident Support.exe"'),
               ('VALUE "ProductName", "RustDesk"', 'VALUE "ProductName", "Digident Support"'),
               ('All rights reserved." "\\0"', 'All rights reserved. Modified by Digident." "\\0"'),
           ])
@@ -191,6 +201,14 @@ jobs:
               ('"https://github.com/rustdesk/rustdesk/issues/"', '"https://www.digident.gr/support"'),
               ('"https://github.com/rustdesk/rustdesk"', '"https://www.digident.gr"'),
           ], strict=False)
+
+          # Orange accent colour sampled from the old Digident Support screenshot (#E07510).
+          patch("flutter/lib/common.dart", [
+              ("static const Color accent = Color(0xFF0071FF);", "static const Color accent = Color(0xFFE07510);"),
+              ("static const Color accent50 = Color(0x770071FF);", "static const Color accent50 = Color(0x77E07510);"),
+              ("static const Color accent80 = Color(0xAA0071FF);", "static const Color accent80 = Color(0xAAE07510);"),
+              ("static const Color button = Color(0xFF2C8CFF);", "static const Color button = Color(0xFFE07510);"),
+          ])
 
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -268,8 +286,16 @@ jobs:
 
       - name: Build rustdesk
         run: |
-          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          $ok = $false
+          for ($i = 1; $i -le 3; $i++) {
+            python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+            if (Test-Path ./flutter/build/windows/x64/runner/Release) { $ok = $true; break }
+            Write-Host "Build attempt $i failed (output folder missing). Retrying..."
+          }
+          if (-not $ok) { Write-Error "Build failed after 3 attempts"; exit 1 }
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+          # Rename the executable to match the app name (the MSI looks for <app-name>.exe)
+          Rename-Item ./rustdesk/rustdesk.exe "Digident Support.exe"
 
           # Download usbmmidd_v2.zip and extract it to ./rustdesk
           Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
@@ -336,10 +362,10 @@ jobs:
           sed -i '/dpiAware/d' res/manifest.xml
           pushd ./libs/portable
           pip3 install -r requirements.txt
-          python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
+          python3 ./generate.py -f ../../rustdesk/ -o . -e "../../rustdesk/Digident Support.exe"
           popd
           mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-x86_64.exe
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/Digident_Support_Portable-${{ env.VERSION }}.exe
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
@@ -349,12 +375,12 @@ jobs:
       - name: Build msi
         run: |
           pushd ./res/msi
-          python preprocess.py --arp -d ../../rustdesk -m Digident
+          python preprocess.py --arp -d ../../rustdesk -m Digident --app-name "Digident Support"
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
           $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
-          mv $msi.FullName ../../SignOutput/rustdesk-${{ env.VERSION }}-x86_64.msi
-          sha256sum ../../SignOutput/rustdesk-*.msi
+          mv $msi.FullName ../../SignOutput/Digident_Support_Setup-${{ env.VERSION }}.msi
+          sha256sum ../../SignOutput/Digident_Support_Setup-*.msi
 
       - name: Upload installers (unsigned)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
