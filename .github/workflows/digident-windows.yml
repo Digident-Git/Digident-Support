@@ -144,9 +144,9 @@ jobs:
           copies = [
               ("icon.ico", "res/icon.ico", "must"),
               ("icon.ico", "flutter/windows/runner/resources/app_icon.ico", "must"),
-              ("icon.ico", "flutter/assets/icon.ico", "optional"),
+              ("icon.ico", "flutter/assets/icon.ico", "create"),
               ("icon.png", "res/icon.png", "must"),
-              ("icon.png", "flutter/assets/icon.png", "optional"),
+              ("icon.png", "flutter/assets/icon.png", "create"),
               ("32x32.png", "res/32x32.png", "must"),
               ("64x64.png", "res/64x64.png", "must"),
               ("128x128.png", "res/128x128.png", "must"),
@@ -154,6 +154,7 @@ jobs:
               ("tray-icon.ico", "res/tray-icon.ico", "must"),
               ("License.rtf", "res/msi/Package/License.rtf", "must"),
               ("left-panel.png", "flutter/assets/logo.png", "create"),
+              ("left-panel.png", "flutter/assets/watermark.png", "create"),
           ]
           for name, dest, mode in copies:
               s = os.path.join(src, name)
@@ -209,6 +210,78 @@ jobs:
               ("static const Color accent80 = Color(0xAA0071FF);", "static const Color accent80 = Color(0xAAE07510);"),
               ("static const Color button = Color(0xFF2C8CFF);", "static const Color button = Color(0xFFE07510);"),
           ])
+
+
+          # ---- UI patches (phase 3) ----
+          import glob, re
+
+          # (a) every remaining RustDesk blue literal -> Digident orange (About box, etc.)
+          changed = 0
+          for path in glob.glob("flutter/lib/**/*.dart", recursive=True):
+              with open(path, encoding="utf-8", newline="") as f:
+                  t = f.read()
+              t2 = re.sub(r"0x([0-9A-Fa-f]{2})0071FF", r"0x\g<1>E07510", t, flags=re.I)
+              t2 = re.sub(r"0xFF2C8CFF", "0xFFE07510", t2, flags=re.I)
+              if t2 != t:
+                  changed += 1
+                  with open(path, "w", encoding="utf-8", newline="") as f:
+                      f.write(t2)
+          print("blue literals replaced in", changed, "dart files")
+
+          # (b) hover border of peer cards (history / favorites / discovered / address book)
+          pc = "flutter/lib/common/widgets/peer_card.dart"
+          with open(pc, encoding="utf-8", newline="") as f:
+              t = f.read()
+          n1 = len(re.findall(r"\bColors\.blue\b(?![.\[])", t))
+          n2 = len(re.findall(r"Theme\.of\(context\)\.colorScheme\.primary", t))
+          t = re.sub(r"\bColors\.blue\b(?![.\[])", "Color(0xFFE07510)", t)
+          t = re.sub(r"Theme\.of\(context\)\.colorScheme\.primary", "Color(0xFFE07510)", t)
+          with open(pc, "w", encoding="utf-8", newline="") as f:
+              f.write(t)
+          print("peer_card.dart: Colors.blue x%d, colorScheme.primary x%d replaced" % (n1, n2))
+
+          # (c) About page slogan (Greek translation)
+          patch("src/lang/el.rs", [], strict=False)
+          lang = "src/lang/el.rs"
+          with open(lang, encoding="utf-8", newline="") as f:
+              t = f.read()
+          t, n = re.subn(r'\("Slogan_tip",\s*"[^"]*"\)',
+                         lambda m: '("Slogan_tip", "Η υποστήριξή σας, είναι η νο 1 μας προτεραιότητα.")', t)
+          print("Slogan_tip replaced:", n)
+          with open(lang, "w", encoding="utf-8", newline="") as f:
+              f.write(t)
+
+          # (d) watermark: large faded logo in the middle of the home page (does not take clicks)
+          home = "flutter/lib/desktop/pages/desktop_home_page.dart"
+          old = "if (!isIncomingOnly) Expanded(child: buildRightPane(context)),"
+          new = """if (!isIncomingOnly)
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          buildRightPane(context),
+                          Positioned.fill(
+                            child: IgnorePointer(
+                              child: Align(
+                                alignment: const Alignment(0, 0.3),
+                                child: FractionallySizedBox(
+                                  widthFactor: 0.55,
+                                  heightFactor: 0.55,
+                                  child: Opacity(
+                                    opacity: 0.10,
+                                    child: Image.asset(
+                                      'assets/watermark.png',
+                                      fit: BoxFit.contain,
+                                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),"""
+          patch(home, [(old, new)])
 
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -375,7 +448,7 @@ jobs:
       - name: Build msi
         run: |
           pushd ./res/msi
-          python preprocess.py --arp -d ../../rustdesk -m Digident --app-name "Digident Support"
+          python preprocess.py --arp -d ../../rustdesk -m Digident --app-name "Digident Support" -v ${{ env.VERSION }}
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
           $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
