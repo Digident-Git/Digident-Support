@@ -3,6 +3,8 @@
 // Reads a small JSON file from ONE fixed HTTPS address and shows dismissible cards on the
 // home page. Nothing is downloaded or installed automatically: buttons only open a link in
 // the default browser. All failures (no internet, bad file) are silent.
+// The card shows on every start until banner.json says "enabled": false; the file is
+// re-read at start-up and every 30 minutes.
 //
 // The placeholders __DG_BANNER_URL__ and __DG_VERSION__ are filled in by the build workflow.
 import 'dart:async';
@@ -51,9 +53,8 @@ class _DigidentBannerState extends State<DigidentBanner> {
   void initState() {
     super.initState();
     if (!_kBannerUrl.startsWith('https://')) return;
-    _loadDismissed();
     _refresh();
-    _timer = Timer.periodic(const Duration(hours: 3), (_) => _refresh());
+    _timer = Timer.periodic(const Duration(minutes: 30), (_) => _refresh());
   }
 
   @override
@@ -111,10 +112,12 @@ class _DigidentBannerState extends State<DigidentBanner> {
     try {
       client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 8);
-      final req = await client
-          .getUrl(Uri.parse(_kBannerUrl))
-          .timeout(const Duration(seconds: 10));
+      final uri = Uri.parse(_kBannerUrl).replace(queryParameters: {
+        't': DateTime.now().millisecondsSinceEpoch.toString(),
+      });
+      final req = await client.getUrl(uri).timeout(const Duration(seconds: 10));
       req.headers.set('Accept', 'application/json');
+      req.headers.set('Cache-Control', 'no-cache');
       final resp = await req.close().timeout(const Duration(seconds: 10));
       if (resp.statusCode != 200) return;
       final body = await resp
@@ -170,34 +173,11 @@ class _DigidentBannerState extends State<DigidentBanner> {
     }
   }
 
-  File? _dismissFile() {
-    final appData = Platform.environment['APPDATA'];
-    if (appData == null || appData.isEmpty) return null;
-    return File(appData + '\\Digident Support\\banner-dismissed.txt');
-  }
-
-  Future<void> _loadDismissed() async {
-    try {
-      final f = _dismissFile();
-      if (f == null || !await f.exists()) return;
-      final lines = await f.readAsLines();
-      if (!mounted) return;
-      setState(() {
-        _dismissed.addAll(
-            lines.map((e) => e.trim()).where((e) => e.isNotEmpty).take(200));
-      });
-    } catch (_) {}
-  }
-
-  Future<void> _dismiss(String id) async {
+  // Closing a card hides it only until the program is opened again.
+  void _dismiss(String id) {
     setState(() {
       _dismissed.add(id);
     });
-    try {
-      final f = _dismissFile();
-      if (f == null) return;
-      await f.writeAsString(_dismissed.join('\n'));
-    } catch (_) {}
   }
 
   Future<void> _open(String? url) async {
