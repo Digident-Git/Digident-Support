@@ -32,6 +32,8 @@ class _BannerData {
   final String buttonText;
   final String? imageUrl;
   final String? linkUrl;
+  final double aspect;
+  final bool wide;
 
   const _BannerData({
     required this.id,
@@ -40,6 +42,8 @@ class _BannerData {
     required this.buttonText,
     this.imageUrl,
     this.linkUrl,
+    this.aspect = 4.0,
+    this.wide = false,
   });
 }
 
@@ -133,14 +137,20 @@ class _DigidentBannerState extends State<DigidentBanner> {
       if (b is Map && b['enabled'] == true) {
         final id = _str(b['id'], 64);
         final text = _str(b['text'], 400);
-        if (id.isNotEmpty && text.isNotEmpty) {
+        final img = _safeUrl(b['image_url']);
+        final layout = _str(b['layout'], 16).toLowerCase();
+        final a = b['image_aspect'];
+        final aspect = (a is num && a >= 1 && a <= 8) ? a.toDouble() : 4.0;
+        if (id.isNotEmpty && (text.isNotEmpty || img != null)) {
           banner = _BannerData(
             id: id,
             title: _str(b['title'], 120),
             text: text,
             buttonText: _str(b['button_text'], 40),
-            imageUrl: _safeUrl(b['image_url']),
+            imageUrl: img,
             linkUrl: _safeUrl(b['url']),
+            aspect: aspect,
+            wide: img != null && layout != 'card',
           );
         }
       }
@@ -202,7 +212,70 @@ class _DigidentBannerState extends State<DigidentBanner> {
     return Column(mainAxisSize: MainAxisSize.min, children: cards);
   }
 
+  // Full-width clickable image. It grows with the window (up to 1200 px wide) and is
+  // limited to 30% of the window height, keeping its aspect ratio (default 4:1).
+  Widget _wide(BuildContext context, _BannerData d) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final paneW =
+          constraints.maxWidth.isFinite ? constraints.maxWidth : 900.0;
+      final winH = MediaQuery.of(context).size.height;
+      double w = paneW - 24;
+      if (w > 1200) w = 1200;
+      final maxH = winH * 0.30;
+      if (w / d.aspect > maxH) w = maxH * d.aspect;
+      if (w < 120) return const SizedBox.shrink();
+      final h = w / d.aspect;
+      final image = Image.network(
+        d.imageUrl!,
+        width: w,
+        height: h,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (c, e, s) => const SizedBox.shrink(),
+      );
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+        child: Center(
+          child: Stack(
+            clipBehavior: Clip.hardEdge,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: d.linkUrl == null
+                    ? image
+                    : MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: () => _open(d.linkUrl),
+                          child: image,
+                        ),
+                      ),
+              ),
+              Positioned(
+                top: 6,
+                right: 6,
+                child: Material(
+                  color: Colors.black54,
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () => _dismiss(d.id),
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(Icons.close, size: 16, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    });
+  }
+
   Widget _card(BuildContext context, _BannerData d) {
+    if (d.wide) return _wide(context, d);
     final theme = Theme.of(context);
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
