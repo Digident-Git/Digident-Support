@@ -57,8 +57,49 @@ class _DigidentBannerState extends State<DigidentBanner> {
   void initState() {
     super.initState();
     if (!_kBannerUrl.startsWith('https://')) return;
-    _refresh();
-    _timer = Timer.periodic(const Duration(minutes: 30), (_) => _refresh());
+    _run();
+  }
+
+  int _fails = 0;
+
+  // After a failure: retry after 20 s, 1 min, 5 min; then every 30 min (also when it works).
+  void _schedule() {
+    _timer?.cancel();
+    Duration d;
+    if (_fails == 1) {
+      d = const Duration(seconds: 20);
+    } else if (_fails == 2) {
+      d = const Duration(minutes: 1);
+    } else if (_fails == 3) {
+      d = const Duration(minutes: 5);
+    } else {
+      d = const Duration(minutes: 30);
+    }
+    _timer = Timer(d, _run);
+  }
+
+  Future<void> _run() async {
+    final result = await _refresh();
+    _fails = result.startsWith('OK') ? 0 : _fails + 1;
+    await _writeStatus(result);
+    if (mounted) _schedule();
+  }
+
+  // Diagnostic file: %AppData%\Digident Support\banner-status.txt (stays on this computer).
+  Future<void> _writeStatus(String msg) async {
+    try {
+      final appData = Platform.environment['APPDATA'];
+      if (appData == null || appData.isEmpty) return;
+      final dir = Directory(appData + '\\Digident Support');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      await File(dir.path + '\\banner-status.txt').writeAsString(
+          DateTime.now().toIso8601String() +
+              '\nversion ' +
+              _kAppVersion +
+              '\n' +
+              msg +
+              '\n');
+    } catch (_) {}
   }
 
   @override
@@ -111,26 +152,26 @@ class _DigidentBannerState extends State<DigidentBanner> {
     return false;
   }
 
-  Future<void> _refresh() async {
+  Future<String> _refresh() async {
     HttpClient? client;
     try {
       client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 8);
+      client.connectionTimeout = const Duration(seconds: 15);
       final uri = Uri.parse(_kBannerUrl).replace(queryParameters: {
         't': DateTime.now().millisecondsSinceEpoch.toString(),
       });
-      final req = await client.getUrl(uri).timeout(const Duration(seconds: 10));
+      final req = await client.getUrl(uri).timeout(const Duration(seconds: 15));
       req.headers.set('Accept', 'application/json');
       req.headers.set('Cache-Control', 'no-cache');
-      final resp = await req.close().timeout(const Duration(seconds: 10));
-      if (resp.statusCode != 200) return;
+      final resp = await req.close().timeout(const Duration(seconds: 15));
+      if (resp.statusCode != 200) return 'HTTP ' + resp.statusCode.toString();
       final body = await resp
           .transform(utf8.decoder)
           .join()
-          .timeout(const Duration(seconds: 10));
-      if (body.length > 20000) return;
+          .timeout(const Duration(seconds: 15));
+      if (body.length > 20000) return 'file too large';
       final data = jsonDecode(body);
-      if (data is! Map) return;
+      if (data is! Map) return 'unexpected file format';
 
       _BannerData? banner;
       final b = data['banner'];
@@ -171,13 +212,20 @@ class _DigidentBannerState extends State<DigidentBanner> {
         }
       }
 
-      if (!mounted) return;
+      if (!mounted) return 'OK (window closed)';
       setState(() {
         _banner = banner;
         _update = update;
       });
-    } catch (_) {
-      // Silent on purpose.
+      return 'OK (banner: ' +
+          (banner != null ? 'on' : 'off') +
+          ', update: ' +
+          (update != null ? 'on' : 'off') +
+          ')';
+    } catch (e) {
+      // No message on screen on purpose; the reason goes to banner-status.txt.
+      final m = e.runtimeType.toString() + ': ' + e.toString();
+      return m.length > 300 ? m.substring(0, 300) : m;
     } finally {
       client?.close(force: true);
     }
